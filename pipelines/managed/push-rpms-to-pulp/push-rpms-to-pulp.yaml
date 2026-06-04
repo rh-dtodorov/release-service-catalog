@@ -721,6 +721,43 @@ spec:
         resolver: git
       runAfter:
         - populate-release-notes
+    - name: bts-sign
+      when:
+        - input: "$(tasks.filter-already-released-advisory-rpms.results.skip_release)"
+          operator: in
+          values: ["false"]
+      taskRef:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: tasks/managed/bts-sign/bts-sign.yaml
+      params:
+        - name: snapshotPath
+          value: "$(tasks.collect-data.results.snapshotSpec)"
+        - name: dataPath
+          value: "$(tasks.collect-data.results.data)"
+        - name: requester
+          value: "$(tasks.extract-requester-from-release.results.output-result)"
+        - name: pipelineRunUid
+          value: $(context.pipelineRun.uid)
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: "$(tasks.push-unsigned-rpms-to-pulp.results.sourceDataArtifact)=$(params.dataDir)"
+        - name: dataDir
+          value: $(params.dataDir)
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
+      runAfter:
+        - push-unsigned-rpms-to-pulp
     - name: rh-sign-rpm
       when:
         - input: "$(tasks.filter-already-released-advisory-rpms.results.skip_release)"
@@ -761,7 +798,7 @@ spec:
         - name: ociStorage
           value: $(params.ociStorage)
         - name: sourceDataArtifact
-          value: "$(tasks.push-unsigned-rpms-to-pulp.results.sourceDataArtifact)=$(params.dataDir)"
+          value: "$(tasks.bts-sign.results.sourceDataArtifact)=$(params.dataDir)"
         - name: dataDir
           value: $(params.dataDir)
         - name: trustedArtifactsDebug
@@ -771,7 +808,7 @@ spec:
         - name: taskGitRevision
           value: "$(params.taskGitRevision)"
       runAfter:
-        - push-unsigned-rpms-to-pulp
+        - bts-sign
     - name: collect-atlas-params
       when:
         - input: "$(tasks.filter-already-released-advisory-rpms.results.skip_release)"
