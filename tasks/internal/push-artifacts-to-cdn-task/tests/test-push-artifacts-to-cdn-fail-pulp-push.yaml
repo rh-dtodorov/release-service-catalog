@@ -89,7 +89,7 @@ spec:
             type: string
         steps:
           - name: check-result
-            image: quay.io/konflux-ci/release-service-utils@sha256:ada350d0170351c4f8ce5f57e52bb287ad9fb8418a8c5f6ca1d2e2683cb697ea
+            image: quay.io/konflux-ci/release-service-utils@sha256:d216555c53ee97d06bfae53c4fa0524cfbd1fa5f8f065d7f490822d4c5bff4c2
             env:
               - name: "RESULT"
                 value: '$(params.result)'

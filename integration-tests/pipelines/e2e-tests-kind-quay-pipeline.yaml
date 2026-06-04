@@ -207,7 +207,7 @@ spec:
               secretName: $(params.cluster-access-secret)
         steps:
           - name: run-test
-            image: quay.io/konflux-ci/release-service-utils@sha256:e852a62497c4537059bb1f4c3ddf5c1a813b2b22bd9f4bb826cffb36af7d5f65
+            image: quay.io/konflux-ci/release-service-utils@sha256:126eefa35f4704b6315acc406920a6ec7283412cf38a53f6c53f11d86aebe376
             env:
               - name: KUBECONFIG
                 value: /tmp/cluster-kubeconfig/kubeconfig
