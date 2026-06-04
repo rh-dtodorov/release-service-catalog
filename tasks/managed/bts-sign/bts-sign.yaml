@@ -1,0 +1,170 @@
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: bts-sign
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.12.1"
+    tekton.dev/tags: bts-sign
+spec:
+  description: |-
+    Tekton task to sign RPM payload content (kernel modules, EFI binaries)
+    via InternalRequest to the direct-bts-signing pipeline.
+    PROTOTYPE: passthrough only, no actual signing.
+  params:
+    - name: dataPath
+      type: string
+      description: Path to the JSON file of the merged data in the data workspace
+    - name: snapshotPath
+      type: string
+      description: Path to the snapshot spec JSON in the data workspace
+    - name: requester
+      type: string
+      description: Name of the user that requested the signing, for auditing purposes
+    - name: pipelineRunUid
+      type: string
+      description: The uid of the current pipelineRun
+    - name: ociStorage
+      description: The OCI repository where the Trusted Artifacts are stored
+      type: string
+      default: "empty"
+    - name: sourceDataArtifact
+      type: string
+      description: Location of trusted artifacts to be used to populate data directory
+      default: ""
+    - name: ociArtifactExpiresAfter
+      description: Expiration for trusted artifacts created in OCI repository
+      type: string
+      default: "1d"
+    - name: trustedArtifactsDebug
+      description: Flag to enable debug logging in trusted artifacts
+      type: string
+      default: ""
+    - name: orasOptions
+      description: oras options to pass to Trusted Artifacts calls
+      type: string
+      default: ""
+    - name: dataDir
+      description: The location where data will be stored
+      type: string
+      default: /var/workdir/release
+    - name: taskGitUrl
+      type: string
+      description: The url to the git repo where the release-service-catalog tasks are stored
+    - name: taskGitRevision
+      type: string
+      description: The revision in the taskGitUrl repo to be used
+  results:
+    - name: sourceDataArtifact
+      type: string
+      description: Produced trusted data artifact
+  volumes:
+    - name: workdir
+      emptyDir: {}
+  stepTemplate:
+    volumeMounts:
+      - mountPath: /var/workdir
+        name: workdir
+    env:
+      - name: IMAGE_EXPIRES_AFTER
+        value: $(params.ociArtifactExpiresAfter)
+      - name: "ORAS_OPTIONS"
+        value: "$(params.orasOptions)"
+      - name: "DEBUG"
+        value: "$(params.trustedArtifactsDebug)"
+    securityContext:
+      runAsUser: 1001
+  steps:
+    - name: use-trusted-artifact
+      computeResources:
+        limits:
+          memory: 64Mi
+          cpu: 30m
+        requests:
+          memory: 64Mi
+          cpu: 30m
+      ref:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: stepactions/use-trusted-artifact/use-trusted-artifact.yaml
+      params:
+        - name: workDir
+          value: $(params.dataDir)
+        - name: sourceDataArtifact
+          value: $(params.sourceDataArtifact)
+    - name: bts-sign
+      image: quay.io/konflux-ci/release-service-utils:d08bdfa3733a7c75d5334aaa77b7aa46fbace00b
+      computeResources:
+        limits:
+          memory: 512Mi
+          cpu: 250m
+        requests:
+          memory: 512Mi
+          cpu: 250m
+      env:
+        - name: DATA_FILE
+          value: $(params.dataDir)/$(params.dataPath)
+        - name: SNAPSHOT_FILE
+          value: $(params.dataDir)/$(params.snapshotPath)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        if [ ! -f "${DATA_FILE}" ]; then
+            echo "ERROR: No data JSON at ${DATA_FILE}"
+            exit 1
+        fi
+
+        if [ ! -f "${SNAPSHOT_FILE}" ]; then
+            echo "ERROR: No snapshot spec at ${SNAPSHOT_FILE}"
+            exit 1
+        fi
+
+        ENABLE_BTS=$(jq -r '.btsSignOptions.enableBts // "false"' "${DATA_FILE}")
+        if [ "${ENABLE_BTS}" != "true" ]; then
+            echo "bts-sign: not enabled, skipping."
+            exit 0
+        fi
+
+        echo "bts-sign: enabled"
+        echo "bts-sign: requester=$(params.requester)"
+
+        COMPONENT_COUNT=$(jq '.components | length' "${SNAPSHOT_FILE}")
+        echo "bts-sign: ${COMPONENT_COUNT} component(s)"
+
+        for ((i=0; i<COMPONENT_COUNT; i++)); do
+            NAME=$(jq -r ".components[${i}].name" "${SNAPSHOT_FILE}")
+            IMAGE=$(jq -r ".components[${i}].containerImage" "${SNAPSHOT_FILE}")
+            echo "bts-sign: component=${NAME} image=${IMAGE}"
+        done
+
+        echo "bts-sign: passthrough complete (no signing performed)"
+    - name: create-trusted-artifact
+      computeResources:
+        limits:
+          memory: 128Mi
+          cpu: 250m
+        requests:
+          memory: 128Mi
+          cpu: 250m
+      ref:
+        resolver: "git"
+        params:
+          - name: url
+            value: "$(params.taskGitUrl)"
+          - name: revision
+            value: "$(params.taskGitRevision)"
+          - name: pathInRepo
+            value: stepactions/create-trusted-artifact/create-trusted-artifact.yaml
+      params:
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: workDir
+          value: $(params.dataDir)
+        - name: sourceDataArtifact
+          value: $(results.sourceDataArtifact.path)
