@@ -42,7 +42,7 @@ spec:
     - name: signingRevision
       type: string
       description: Revision of the internal BTS pipeline whose invocation is logged; no request is submitted yet
-      default: main
+      default: rok-bts-iterdev
     - name: enterpriseContractPolicy
       type: string
       description: JSON representation of the EnterpriseContractPolicy
