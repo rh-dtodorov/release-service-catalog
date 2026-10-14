@@ -9,7 +9,8 @@ metadata:
 spec:
   description: |-
     Tekton pipeline to push rpms into the artifact storage instance.
-    On import, a logging-only BTS stage passes the reduced snapshot to Koji unchanged.
+    On import, BTS runs through an InternalRequest and its returned artifact is passed to Koji.
+    The current BTS worker returns the reduced snapshot unchanged.
     Promotion does not run BTS.
   params:
     - name: release
@@ -37,11 +38,11 @@ spec:
       description: The revision in the taskGitUrl repo to be used
     - name: signingRepo
       type: string
-      description: Repository containing the internal BTS pipeline whose invocation is logged
+      description: Repository containing the internal BTS pipeline and worker task
       default: https://gitlab.cee.redhat.com/dtodorov/signing.git
     - name: signingRevision
       type: string
-      description: Revision of the internal BTS pipeline whose invocation is logged; no request is submitted yet
+      description: Revision of the internal BTS pipeline and worker task
       default: rok-bts-iterdev
     - name: enterpriseContractPolicy
       type: string
@@ -256,6 +257,7 @@ spec:
         - collect-task-params
         - collect-signing-params
     - name: bts-sign
+      timeout: "0h40m0s"
       taskRef:
         resolver: "git"
         params:

@@ -7,10 +7,10 @@ metadata:
     tekton.dev/tags: signing, rpm
 spec:
   description: |-
-    Logging-only BTS caller for snapshot-based RPM signing. Reads signOptions.allowedComponents
-    and Release attribution, logs the intended internal bts-sign invocation, and returns the
-    input Trusted Artifact unchanged. No InternalRequest is submitted and no RPMs are signed.
-    Missing signing configuration does not block passthrough.
+    Submits an InternalRequest for snapshot-based BTS, waits for completion, and returns the
+    worker's sourceDataArtifact result. Reads signOptions.allowedComponents and Release attribution.
+    The current worker returns the input Trusted Artifact unchanged without signing RPMs.
+    Signing keys are not required for the passthrough worker.
   params:
     - name: snapshotPath
       type: string
@@ -23,10 +23,22 @@ spec:
       description: Relative path to the collected Release JSON used for attribution
     - name: sourceDataArtifact
       type: string
-      description: Input Trusted Artifact reference, returned unchanged by this skeleton
+      description: Input Trusted Artifact reference passed to the BTS worker
     - name: pipelineRunUid
       type: string
-      description: Release PipelineRun UID for the intended InternalRequest correlation label
+      description: Release PipelineRun UID for the InternalRequest correlation label
+    - name: requestTimeout
+      type: string
+      description: Seconds to wait for the InternalRequest, including pipeline startup
+      default: "2100"
+    - name: pipelineTimeout
+      type: string
+      description: Pipeline timeout for the BTS InternalRequest
+      default: "0h30m0s"
+    - name: taskTimeout
+      type: string
+      description: Task timeout for the BTS InternalRequest
+      default: "0h25m0s"
     - name: dataDir
       type: string
       description: Directory into which the input Trusted Artifact is extracted
@@ -39,12 +51,12 @@ spec:
       description: Catalog revision for resolving the Trusted Artifact StepAction
     - name: signingRepo
       type: string
-      description: Repository containing the internal BTS pipeline whose invocation is logged
+      description: Repository containing the internal BTS pipeline and worker task
       default: https://gitlab.cee.redhat.com/dtodorov/signing.git
     - name: signingRevision
       type: string
-      description: Revision of the internal BTS pipeline whose invocation is logged
-      default: main
+      description: Revision of the internal BTS pipeline and worker task
+      default: rok-bts-iterdev
     - name: trustedArtifactsDebug
       type: string
       description: Non-empty value enables Trusted Artifact debug logging
@@ -64,7 +76,7 @@ spec:
   results:
     - name: sourceDataArtifact
       type: string
-      description: Unchanged input Trusted Artifact; no signing has occurred
+      description: Trusted Artifact returned by the completed BTS InternalRequest
   volumes:
     - name: workdir
       emptyDir: {}
@@ -111,7 +123,7 @@ spec:
           value: $(params.sourceDataArtifact)
         - name: orasOptions
           value: $(params.orasOptions)
-    - name: log-bts-intention
+    - name: request-bts-sign
       image: quay.io/konflux-ci/release-service-utils@sha256:da48275d90ecd65e2aec9c71f74b86314ce6ceb81dc3045d5c7546c9548273e8
       computeResources:
         limits:
@@ -140,6 +152,16 @@ spec:
           value: $(params.signingRevision)
         - name: PIPELINERUN_UID
           value: $(params.pipelineRunUid)
+        - name: TASKRUN_UID
+          value: $(context.taskRun.uid)
+        - name: REQUEST_NAMESPACE
+          value: $(context.taskRun.namespace)
+        - name: REQUEST_TIMEOUT
+          value: $(params.requestTimeout)
+        - name: PIPELINE_TIMEOUT
+          value: $(params.pipelineTimeout)
+        - name: TASK_TIMEOUT
+          value: $(params.taskTimeout)
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -164,28 +186,48 @@ spec:
           ' "${RELEASE_FILE}")
         fi
 
-        printf 'BTS not implemented: logging intention only; no request or signing will run.\n'
+        SERVICE_ACCOUNT=$(jq -er '
+          .signOptions.signPipelineServiceAccount // "release-service-account" |
+          if type == "string" and length > 0 then .
+          else error("signOptions.signPipelineServiceAccount must be a non-empty string") end
+        ' "${DATA_FILE}")
+
         printf 'Allowed components: %s\nSelected snapshot components: %s\n' \
           "${ALLOWED_COMPONENTS}" "${SELECTED_COMPONENTS}"
-        #
         # NOTE: explicit allowlist until hub-policy gating is integrated (or some other gating).
-        # NOTE: logging-only scaffold; we'llmove real request submission to release-service-utils.
-        #
-        # TODO: validate signing configuration and select its service account before real submission.
+        # NOTE: reuse the existing CLI; move orchestration to release-service-utils with real signing.
+        # TODO: validate signing configuration when the worker implements real signing.
         # TODO: preserve Koji metadata when publishing signed RPMs and a new snapshot spec.
         # TODO: add Snapshot CR support and genuine BTS Conforma evidence after real signing exists.
-        #
-        REQUEST=(internal-request --pipeline bts-sign
-          -p "source_data_artifact=${SOURCE_DATA_ARTIFACT}"
-          -p "snapshot_path=${SNAPSHOT_PATH}"
-          -p "data_path=${DATA_PATH}"
-          -p "allowed_components=${ALLOWED_COMPONENTS}"
-          -p "requester=${REQUESTER}"
-          -p "taskGitUrl=${SIGNING_REPO}"
-          -p "taskGitRevision=${SIGNING_REVISION}"
-          -l "internal-services.appstudio.openshift.io/pipelinerun-uid=${PIPELINERUN_UID}"
-          -s true)
-        printf 'Intended command (not executed):'
-        printf ' %q' "${REQUEST[@]}"
-        printf '\nSigning configuration and key provisioning are deferred.\n'
-        printf '%s' "${SOURCE_DATA_ARTIFACT}" > "${RESULT_FILE}"
+        internal-request --pipeline bts-sign \
+          -p "source_data_artifact=${SOURCE_DATA_ARTIFACT}" \
+          -p "snapshot_path=${SNAPSHOT_PATH}" \
+          -p "data_path=${DATA_PATH}" \
+          -p "allowed_components=${ALLOWED_COMPONENTS}" \
+          -p "requester=${REQUESTER}" \
+          -p "taskGitUrl=${SIGNING_REPO}" \
+          -p "taskGitRevision=${SIGNING_REVISION}" \
+          -l "internal-services.appstudio.openshift.io/pipelinerun-uid=${PIPELINERUN_UID}" \
+          -l "internal-services.appstudio.openshift.io/taskrun-uid=${TASKRUN_UID}" \
+          -t "${REQUEST_TIMEOUT}" \
+          --service-account "${SERVICE_ACCOUNT}" \
+          --pipeline-timeout "${PIPELINE_TIMEOUT}" \
+          --task-timeout "${TASK_TIMEOUT}" \
+          -s true
+
+        REQUEST=$(kubectl get internalrequest -n "${REQUEST_NAMESPACE}" \
+          -l "internal-services.appstudio.openshift.io/taskrun-uid=${TASKRUN_UID}" -o json | jq -ce '
+            .items | if length == 1 then .[0]
+            else error("Expected exactly one BTS InternalRequest for this TaskRun") end
+          ')
+        OUTPUT_ARTIFACT=$(jq -er '
+          if any(.status.conditions[]?; .type == "InternalRequestSucceeded" and .status == "True")
+          then .status.results.sourceDataArtifact
+          else error("BTS InternalRequest did not succeed") end |
+          if type == "string" and length > 0 then .
+          else error("BTS InternalRequest did not return sourceDataArtifact") end
+        ' <<< "${REQUEST}")
+        printf 'BTS InternalRequest: %s\nBTS PipelineRun: %s\nReturned artifact: %s\n' \
+          "$(jq -r '.metadata.name' <<< "${REQUEST}")" \
+          "$(jq -r '.status.pipelineRun' <<< "${REQUEST}")" "${OUTPUT_ARTIFACT}"
+        printf '%s' "${OUTPUT_ARTIFACT}" > "${RESULT_FILE}"
