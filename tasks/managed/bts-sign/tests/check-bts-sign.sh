@@ -29,7 +29,7 @@ run_caller() {
     DATA_PATH="run/data.json" \
     SOURCE_DATA_ARTIFACT="${EXPECTED_ARTIFACT}" \
     RESULT_FILE="${WORK_DIR}/result" \
-    SIGNING_REPO="https://gitlab.cee.redhat.com/signing/signing.git" \
+    SIGNING_REPO="https://gitlab.cee.redhat.com/dtodorov/signing.git" \
     SIGNING_REVISION="test-bts" \
     PIPELINERUN_UID="test-run" \
     bash "${WORK_DIR}/caller.sh" > "${WORK_DIR}/output" 2>&1

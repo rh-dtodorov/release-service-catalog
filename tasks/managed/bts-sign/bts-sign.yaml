@@ -40,7 +40,7 @@ spec:
     - name: signingRepo
       type: string
       description: Repository containing the internal BTS pipeline whose invocation is logged
-      default: https://gitlab.cee.redhat.com/signing/signing.git
+      default: https://gitlab.cee.redhat.com/dtodorov/signing.git
     - name: signingRevision
       type: string
       description: Revision of the internal BTS pipeline whose invocation is logged
