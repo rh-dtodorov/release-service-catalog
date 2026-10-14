@@ -9,6 +9,8 @@ metadata:
 spec:
   description: |-
     Tekton pipeline to push rpms into the artifact storage instance.
+    On import, a logging-only BTS stage passes the reduced snapshot to Koji unchanged.
+    Promotion does not run BTS.
   params:
     - name: release
       type: string
@@ -33,6 +35,14 @@ spec:
     - name: taskGitRevision
       type: string
       description: The revision in the taskGitUrl repo to be used
+    - name: signingRepo
+      type: string
+      description: Repository containing the internal BTS pipeline whose invocation is logged
+      default: https://gitlab.cee.redhat.com/signing/signing.git
+    - name: signingRevision
+      type: string
+      description: Revision of the internal BTS pipeline whose invocation is logged; no request is submitted yet
+      default: main
     - name: enterpriseContractPolicy
       type: string
       description: JSON representation of the EnterpriseContractPolicy
@@ -245,6 +255,47 @@ spec:
         - reduce-snapshot
         - collect-task-params
         - collect-signing-params
+    - name: bts-sign
+      taskRef:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: tasks/managed/bts-sign/bts-sign.yaml
+      params:
+        - name: dataPath
+          value: "$(tasks.collect-data.results.data)"
+        - name: snapshotPath
+          value: "$(tasks.collect-data.results.snapshotSpec)"
+        - name: releasePath
+          value: "$(tasks.collect-data.results.release)"
+        - name: sourceDataArtifact
+          value: "$(tasks.reduce-snapshot.results.sourceDataArtifact)"
+        - name: pipelineRunUid
+          value: $(context.pipelineRun.uid)
+        - name: dataDir
+          value: $(params.dataDir)
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
+        - name: orasOptions
+          value: "$(params.orasOptions)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
+        - name: signingRepo
+          value: "$(params.signingRepo)"
+        - name: signingRevision
+          value: "$(params.signingRevision)"
+      runAfter:
+        - verify-conforma
+      when:
+        - input: $(tasks.collect-task-params.results.extractedValues[3])
+          operator: notin
+          values: ["promote"]
     - name: push-rpm-to-koji
       taskRef:
         resolver: "git"
@@ -267,7 +318,7 @@ spec:
         - name: ociStorage
           value: $(params.ociStorage)
         - name: sourceDataArtifact
-          value: "$(tasks.reduce-snapshot.results.sourceDataArtifact)"
+          value: "$(tasks.bts-sign.results.sourceDataArtifact)"
         - name: dataDir
           value: $(params.dataDir)
         - name: trustedArtifactsDebug
@@ -277,7 +328,7 @@ spec:
         - name: taskGitRevision
           value: "$(params.taskGitRevision)"
       runAfter:
-        - verify-conforma
+        - bts-sign
       when:
         - input: $(tasks.collect-task-params.results.extractedValues[3])
           operator: notin

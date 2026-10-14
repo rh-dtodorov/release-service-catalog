@@ -1,0 +1,191 @@
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: bts-sign
+  annotations:
+    tekton.dev/tags: signing, rpm
+spec:
+  description: |-
+    Logging-only BTS caller for snapshot-based RPM signing. Reads signOptions.allowedComponents
+    and Release attribution, logs the intended internal bts-sign invocation, and returns the
+    input Trusted Artifact unchanged. No InternalRequest is submitted and no RPMs are signed.
+    Missing signing configuration does not block passthrough.
+  params:
+    - name: snapshotPath
+      type: string
+      description: Relative path to the reduced snapshot spec in the input Trusted Artifact
+    - name: dataPath
+      type: string
+      description: Relative path to the merged release data in the input Trusted Artifact
+    - name: releasePath
+      type: string
+      description: Relative path to the collected Release JSON used for attribution
+    - name: sourceDataArtifact
+      type: string
+      description: Input Trusted Artifact reference, returned unchanged by this skeleton
+    - name: pipelineRunUid
+      type: string
+      description: Release PipelineRun UID for the intended InternalRequest correlation label
+    - name: dataDir
+      type: string
+      description: Directory into which the input Trusted Artifact is extracted
+      default: /var/workdir/release
+    - name: taskGitUrl
+      type: string
+      description: Catalog repository URL for resolving the Trusted Artifact StepAction
+    - name: taskGitRevision
+      type: string
+      description: Catalog revision for resolving the Trusted Artifact StepAction
+    - name: signingRepo
+      type: string
+      description: Repository containing the internal BTS pipeline whose invocation is logged
+      default: https://gitlab.cee.redhat.com/signing/signing.git
+    - name: signingRevision
+      type: string
+      description: Revision of the internal BTS pipeline whose invocation is logged
+      default: main
+    - name: trustedArtifactsDebug
+      type: string
+      description: Non-empty value enables Trusted Artifact debug logging
+      default: ""
+    - name: orasOptions
+      type: string
+      description: Additional options for extracting the input Trusted Artifact
+      default: ""
+    - name: caTrustConfigMapName
+      type: string
+      description: ConfigMap containing the trusted CA bundle
+      default: trusted-ca
+    - name: caTrustConfigMapKey
+      type: string
+      description: CA bundle entry in the trusted CA ConfigMap
+      default: ca-bundle.crt
+  results:
+    - name: sourceDataArtifact
+      type: string
+      description: Unchanged input Trusted Artifact; no signing has occurred
+  volumes:
+    - name: workdir
+      emptyDir: {}
+    - name: trusted-ca
+      configMap:
+        name: $(params.caTrustConfigMapName)
+        items:
+          - key: $(params.caTrustConfigMapKey)
+            path: ca-bundle.crt
+        optional: true
+  stepTemplate:
+    securityContext:
+      runAsUser: 1001
+    volumeMounts:
+      - name: workdir
+        mountPath: /var/workdir
+      - name: trusted-ca
+        mountPath: /mnt/trusted-ca
+        readOnly: true
+    env:
+      - name: DEBUG
+        value: $(params.trustedArtifactsDebug)
+  steps:
+    - name: use-trusted-artifact
+      computeResources:
+        limits:
+          memory: 64Mi
+        requests:
+          memory: 64Mi
+          cpu: 30m
+      ref:
+        resolver: git
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: stepactions/use-trusted-artifact/use-trusted-artifact.yaml
+      params:
+        - name: workDir
+          value: $(params.dataDir)
+        - name: sourceDataArtifact
+          value: $(params.sourceDataArtifact)
+        - name: orasOptions
+          value: $(params.orasOptions)
+    - name: log-bts-intention
+      image: quay.io/konflux-ci/release-service-utils@sha256:da48275d90ecd65e2aec9c71f74b86314ce6ceb81dc3045d5c7546c9548273e8
+      computeResources:
+        limits:
+          memory: 128Mi
+        requests:
+          memory: 128Mi
+          cpu: 100m
+      env:
+        - name: DATA_FILE
+          value: $(params.dataDir)/$(params.dataPath)
+        - name: SNAPSHOT_FILE
+          value: $(params.dataDir)/$(params.snapshotPath)
+        - name: RELEASE_FILE
+          value: $(params.dataDir)/$(params.releasePath)
+        - name: SNAPSHOT_PATH
+          value: $(params.snapshotPath)
+        - name: DATA_PATH
+          value: $(params.dataPath)
+        - name: SOURCE_DATA_ARTIFACT
+          value: $(params.sourceDataArtifact)
+        - name: RESULT_FILE
+          value: $(results.sourceDataArtifact.path)
+        - name: SIGNING_REPO
+          value: $(params.signingRepo)
+        - name: SIGNING_REVISION
+          value: $(params.signingRevision)
+        - name: PIPELINERUN_UID
+          value: $(params.pipelineRunUid)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        : "${SOURCE_DATA_ARTIFACT:?No input Trusted Artifact reference was provided}"
+        ALLOWED_COMPONENTS=$(jq -ce '
+          (if .signOptions.allowedComponents == null then [] else .signOptions.allowedComponents end) |
+          if type == "array" and all(.[]; type == "string" and length > 0)
+          then . else error("signOptions.allowedComponents must be an array of component names") end
+        ' "${DATA_FILE}")
+        SELECTED_COMPONENTS=$(jq -ce --argjson allowed "${ALLOWED_COMPONENTS}" '
+          .components |
+          if type == "array" and all(.[]; (.name | type == "string" and length > 0))
+          then [.[].name | select(. as $name | $allowed | index($name))]
+          else error("snapshot components must have non-empty names") end
+        ' "${SNAPSHOT_FILE}")
+        REQUESTER="NOT_ENOUGH_DATA"
+        if [[ -f "${RELEASE_FILE}" ]]; then
+          REQUESTER=$(jq -r '
+            .status.attribution.author |
+            if type == "string" and length > 0 then . else "NOT_ENOUGH_DATA" end
+          ' "${RELEASE_FILE}")
+        fi
+
+        printf 'BTS not implemented: logging intention only; no request or signing will run.\n'
+        printf 'Allowed components: %s\nSelected snapshot components: %s\n' \
+          "${ALLOWED_COMPONENTS}" "${SELECTED_COMPONENTS}"
+        #
+        # NOTE: explicit allowlist until hub-policy gating is integrated (or some other gating).
+        # NOTE: logging-only scaffold; we'llmove real request submission to release-service-utils.
+        #
+        # TODO: validate signing configuration and select its service account before real submission.
+        # TODO: preserve Koji metadata when publishing signed RPMs and a new snapshot spec.
+        # TODO: add Snapshot CR support and genuine BTS Conforma evidence after real signing exists.
+        #
+        REQUEST=(internal-request --pipeline bts-sign
+          -p "source_data_artifact=${SOURCE_DATA_ARTIFACT}"
+          -p "snapshot_path=${SNAPSHOT_PATH}"
+          -p "data_path=${DATA_PATH}"
+          -p "allowed_components=${ALLOWED_COMPONENTS}"
+          -p "requester=${REQUESTER}"
+          -p "taskGitUrl=${SIGNING_REPO}"
+          -p "taskGitRevision=${SIGNING_REVISION}"
+          -l "internal-services.appstudio.openshift.io/pipelinerun-uid=${PIPELINERUN_UID}"
+          -s true)
+        printf 'Intended command (not executed):'
+        printf ' %q' "${REQUEST[@]}"
+        printf '\nSigning configuration and key provisioning are deferred.\n'
+        printf '%s' "${SOURCE_DATA_ARTIFACT}" > "${RESULT_FILE}"
