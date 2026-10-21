@@ -127,9 +127,9 @@ spec:
       image: quay.io/konflux-ci/release-service-utils@sha256:da48275d90ecd65e2aec9c71f74b86314ce6ceb81dc3045d5c7546c9548273e8
       computeResources:
         limits:
-          memory: 128Mi
+          memory: 512Mi
         requests:
-          memory: 128Mi
+          memory: 512Mi
           cpu: 100m
       env:
         - name: DATA_FILE
@@ -166,6 +166,16 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
 
+        STAGE=validate-input
+        report_failure() {
+          local status=$?
+          if [[ "${status}" -ne 0 ]]; then
+            printf 'BTS failed: stage=%s exit=%s\n' "${STAGE}" "${status}" >&2
+          fi
+        }
+        trap report_failure EXIT
+        printf 'BTS stage=%s namespace=%s pipelineRunUid=%s taskRunUid=%s\n' \
+          "${STAGE}" "${REQUEST_NAMESPACE}" "${PIPELINERUN_UID}" "${TASKRUN_UID}"
         : "${SOURCE_DATA_ARTIFACT:?No input Trusted Artifact reference was provided}"
         ALLOWED_COMPONENTS=$(jq -ce '
           (if .signOptions.allowedComponents == null then [] else .signOptions.allowedComponents end) |
@@ -199,6 +209,11 @@ spec:
         # TODO: validate signing configuration when the worker implements real signing.
         # TODO: preserve Koji metadata when publishing signed RPMs and a new snapshot spec.
         # TODO: add Snapshot CR support and genuine BTS Conforma evidence after real signing exists.
+        STAGE=submit-and-wait
+        printf 'BTS stage=%s repository=%s revision=%s serviceAccount=%s requester=%s\n' \
+          "${STAGE}" "${SIGNING_REPO}" "${SIGNING_REVISION}" "${SERVICE_ACCOUNT}" "${REQUESTER}"
+        printf 'BTS timeouts: request=%ss pipeline=%s tasks=%s\n' \
+          "${REQUEST_TIMEOUT}" "${PIPELINE_TIMEOUT}" "${TASK_TIMEOUT}"
         internal-request --pipeline bts-sign \
           -p "source_data_artifact=${SOURCE_DATA_ARTIFACT}" \
           -p "snapshot_path=${SNAPSHOT_PATH}" \
@@ -215,11 +230,17 @@ spec:
           --task-timeout "${TASK_TIMEOUT}" \
           -s true
 
+        STAGE=read-request
+        printf 'BTS stage=%s\n' "${STAGE}"
         REQUEST=$(kubectl get internalrequest -n "${REQUEST_NAMESPACE}" \
           -l "internal-services.appstudio.openshift.io/taskrun-uid=${TASKRUN_UID}" -o json | jq -ce '
             .items | if length == 1 then .[0]
             else error("Expected exactly one BTS InternalRequest for this TaskRun") end
           ')
+        STAGE=validate-result
+        printf 'BTS stage=%s\n' "${STAGE}"
+        jq -c '{name: .metadata.name, pipelineRun: .status.pipelineRun, conditions: .status.conditions}' \
+          <<< "${REQUEST}"
         OUTPUT_ARTIFACT=$(jq -er '
           if any(.status.conditions[]?; .type == "InternalRequestSucceeded" and .status == "True")
           then .status.results.sourceDataArtifact
@@ -230,4 +251,7 @@ spec:
         printf 'BTS InternalRequest: %s\nBTS PipelineRun: %s\nReturned artifact: %s\n' \
           "$(jq -r '.metadata.name' <<< "${REQUEST}")" \
           "$(jq -r '.status.pipelineRun' <<< "${REQUEST}")" "${OUTPUT_ARTIFACT}"
+        STAGE=write-result
+        printf 'BTS stage=%s\n' "${STAGE}"
         printf '%s' "${OUTPUT_ARTIFACT}" > "${RESULT_FILE}"
+        printf 'BTS completed\n'

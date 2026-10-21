@@ -91,6 +91,7 @@ expect_failure() {
         status=$?
     fi
     [[ ! -f "${WORK_DIR}/result" ]]
+    [[ "$(<"${WORK_DIR}/output")" != *'BTS completed'* ]]
     [[ -z "${2:-}" || "${status}" == "$2" ]]
 }
 
@@ -103,6 +104,10 @@ run_caller
 [[ $(wc -c < "${WORK_DIR}/result") -eq ${#EXPECTED_ARTIFACT} ]]
 [[ "$(<"${WORK_DIR}/output")" == *'Selected snapshot components: ["allowed-rpm"]'* ]]
 [[ "$(<"${WORK_DIR}/output")" == *'BTS PipelineRun: rhtap-releng-tenant/internalrequest-test'* ]]
+[[ "$(<"${WORK_DIR}/output")" == *'namespace=rhtap-releng-tenant pipelineRunUid=test-run taskRunUid=test-task-run'* ]]
+[[ "$(<"${WORK_DIR}/output")" == *'serviceAccount=release-service-account requester=test-author'* ]]
+[[ "$(<"${WORK_DIR}/output")" == *'BTS completed'* ]]
+[[ "$(<"${WORK_DIR}/output")" != *'BTS failed:'* ]]
 check_request_args '["allowed-rpm","absent-rpm"]' test-author
 jq -e '. == ["get", "internalrequest", "-n", "rhtap-releng-tenant",
   "-l", "internal-services.appstudio.openshift.io/taskrun-uid=test-task-run", "-o", "json"]' \
@@ -127,15 +132,18 @@ run_caller
 check_request_args '[]' NOT_ENOUGH_DATA bts-test-account
 
 # Submission, rejection/execution failure, timeout, and result reads must stop the caller.
-for status in 1 21 22 124; do
+for status in 1 21 22 124 137; do
     MOCK_REQUEST_EXIT="${status}" expect_failure "Request exit ${status}" "${status}"
+    [[ "$(<"${WORK_DIR}/output")" == *"BTS failed: stage=submit-and-wait exit=${status}"* ]]
     [[ -f "${WORK_DIR}/request-args.json" && ! -f "${WORK_DIR}/get-args.json" ]]
 done
 MOCK_KUBECTL_EXIT=1 expect_failure 'Failed request status read'
+[[ "$(<"${WORK_DIR}/output")" == *'BTS failed: stage=read-request exit=1'* ]]
 
 for artifact in null '""' false '[]' '{}' 12; do
     write_requests "${artifact}"
     expect_failure "Invalid result ${artifact}"
+    [[ "$(<"${WORK_DIR}/output")" == *'BTS failed: stage=validate-result exit='* ]]
 done
 for count in 0 2; do
     write_requests "${ARTIFACT_JSON}" "${count}"
@@ -149,6 +157,7 @@ done
 # Invalid input is distinct from missing signing configuration.
 jq -n '{signOptions: {allowedComponents: "allowed-rpm"}}' > "${WORK_DIR}/data.json"
 expect_failure 'Invalid allowlist'
+[[ "$(<"${WORK_DIR}/output")" == *'BTS failed: stage=validate-input exit='* ]]
 [[ ! -f "${WORK_DIR}/request-args.json" ]]
 jq -n '{signOptions: {allowedComponents: false}}' > "${WORK_DIR}/data.json"
 expect_failure 'Boolean allowlist'
@@ -161,11 +170,13 @@ jq -n '{components: [{name: null}]}' > "${WORK_DIR}/snapshot.json"
 expect_failure 'Invalid snapshot'
 [[ ! -f "${WORK_DIR}/request-args.json" ]]
 
-# Context and timeout values must be wired into the extracted caller script's environment.
+# Check caller resources, context, and timeout wiring.
 yq -o=json "${TASK}" | jq -e '
+  (.spec.steps[] | select(.name == "request-bts-sign")) as $caller |
   (.spec.params | map({key: .name, value: .default}) | from_entries) as $defaults |
   (.spec.steps[] | select(.name == "request-bts-sign") | .env |
     map({key: .name, value: .value}) | from_entries) as $env |
+  $caller.computeResources.limits.memory == "512Mi" and $caller.computeResources.requests.memory == "512Mi" and
   $defaults.requestTimeout == "2100" and $defaults.pipelineTimeout == "0h30m0s" and
   $defaults.taskTimeout == "0h25m0s" and $defaults.signingRevision == "rok-bts-iterdev" and
   $env.TASKRUN_UID == "$(context.taskRun.uid)" and
