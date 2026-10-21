@@ -35,7 +35,7 @@ write_requests() {
         metadata: {name: "bts-sign-test"},
         status: {
           pipelineRun: "rhtap-releng-tenant/internalrequest-test",
-          conditions: [{type: "InternalRequestSucceeded", status: $status}],
+          conditions: [{type: "Succeeded", status: $status}],
           results: {sourceDataArtifact: $artifact}
         }
       }]

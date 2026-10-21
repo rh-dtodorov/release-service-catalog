@@ -242,7 +242,7 @@ spec:
         jq -c '{name: .metadata.name, pipelineRun: .status.pipelineRun, conditions: .status.conditions}' \
           <<< "${REQUEST}"
         OUTPUT_ARTIFACT=$(jq -er '
-          if any(.status.conditions[]?; .type == "InternalRequestSucceeded" and .status == "True")
+          if any(.status.conditions[]?; .type == "Succeeded" and .status == "True")
           then .status.results.sourceDataArtifact
           else error("BTS InternalRequest did not succeed") end |
           if type == "string" and length > 0 then .
