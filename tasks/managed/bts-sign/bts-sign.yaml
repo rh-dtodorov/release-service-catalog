@@ -342,22 +342,24 @@ spec:
           exit 0
         fi
         REF=$(cat "$(results.sourceDataArtifact.path)")
-        CONFIG=""
-        for candidate in "${HOME:-/tekton/home}/.docker/config.json" \
-            /tekton/creds-secrets/quay-token-*/.dockerconfigjson \
-            /tekton/creds-secrets/*/.dockerconfigjson; do
-          if [[ -f "${candidate}" ]]; then
-            CONFIG="${candidate}"
+        mkdir -p /var/workdir/probe-evidence
+        PULLED=false
+        for candidate in /tekton/creds-secrets/quay-token-*/.dockerconfigjson \
+            /tekton/creds-secrets/*/.dockerconfigjson \
+            "${HOME:-/tekton/home}/.docker/config.json"; do
+          [[ -f "${candidate}" ]] || continue
+          if oras pull --registry-config "${candidate}" \
+              --output /var/workdir/probe-evidence "${REF#oci:}"; then
+            printf 'Pulled probe evidence with %s\n' "${candidate}"
+            PULLED=true
             break
           fi
         done
-        if [[ -z "${CONFIG}" ]]; then
-          printf 'No registry credentials found for the evidence pull\n' >&2
+        if [[ "${PULLED}" != "true" ]]; then
+          printf 'Could not pull the probe evidence artifact with any mounted credentials\n' >&2
+          ls -la /tekton/creds-secrets/*/ 2>/dev/null >&2 || true
           exit 1
         fi
-        mkdir -p /var/workdir/probe-evidence
-        oras pull --registry-config "${CONFIG}" \
-          --output /var/workdir/probe-evidence "${REF#oci:}"
         EVIDENCE="/var/workdir/probe-evidence/results/bts-probe"
         if [[ ! -d "${EVIDENCE}" ]]; then
           printf 'No probe evidence directory in the returned artifact\n' >&2
