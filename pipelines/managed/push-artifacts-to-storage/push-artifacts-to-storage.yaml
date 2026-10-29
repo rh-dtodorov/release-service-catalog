@@ -10,7 +10,7 @@ spec:
   description: |-
     Tekton pipeline to push rpms into the artifact storage instance.
     On import, BTS runs through an InternalRequest and its returned artifact is passed to Koji.
-    The current BTS worker returns the reduced snapshot unchanged.
+    The mock BTS worker reconstructs selected RPM bundles without generating signatures.
     Promotion does not run BTS.
   params:
     - name: release
@@ -58,6 +58,10 @@ spec:
       type: string
       description: The OCI repository where the Trusted Artifacts are stored
       default: "quay.io/konflux-ci/release-service-trusted-artifacts"
+    - name: ociArtifactExpiresAfter
+      type: string
+      description: Retention of BTS output artifacts; empty means no expiration
+      default: 1d
     - name: orasOptions
       description: oras options to pass to Trusted Artifacts calls
       type: string
@@ -278,6 +282,10 @@ spec:
           value: "$(tasks.reduce-snapshot.results.sourceDataArtifact)"
         - name: pipelineRunUid
           value: $(context.pipelineRun.uid)
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: ociArtifactExpiresAfter
+          value: $(params.ociArtifactExpiresAfter)
         - name: dataDir
           value: $(params.dataDir)
         - name: trustedArtifactsDebug

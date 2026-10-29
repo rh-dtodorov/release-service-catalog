@@ -50,6 +50,12 @@ run_caller() {
     SNAPSHOT_PATH="run/snapshot.json" \
     DATA_PATH="run/data.json" \
     SOURCE_DATA_ARTIFACT="${EXPECTED_ARTIFACT}" \
+    OCI_STORAGE="quay.io/example/worker-output" \
+    IMAGE_EXPIRES_AFTER="7d" \
+    TA_TASK_GIT_URL="https://github.com/example/catalog.git" \
+    TA_TASK_GIT_REVISION="catalog-test" \
+    ORAS_OPTIONS="--debug" \
+    TRUSTED_ARTIFACTS_DEBUG="1" \
     RESULT_FILE="${WORK_DIR}/result" \
     SIGNING_REPO="https://gitlab.cee.redhat.com/dtodorov/signing.git" \
     SIGNING_REVISION="test-bts" \
@@ -73,6 +79,12 @@ check_request_args() {
         "-p", "data_path=run/data.json",
         "-p", ("allowed_components=" + $allowed),
         "-p", ("requester=" + $requester),
+        "-p", "oci_storage=quay.io/example/worker-output",
+        "-p", "oci_artifact_expires_after=7d",
+        "-p", "taTaskGitUrl=https://github.com/example/catalog.git",
+        "-p", "taTaskGitRevision=catalog-test",
+        "-p", "orasOptions=--debug",
+        "-p", "trustedArtifactsDebug=1",
         "-p", "taskGitUrl=https://gitlab.cee.redhat.com/dtodorov/signing.git",
         "-p", "taskGitRevision=test-bts",
         "-l", "internal-services.appstudio.openshift.io/pipelinerun-uid=test-run",
@@ -95,7 +107,7 @@ expect_failure() {
     [[ -z "${2:-}" || "${status}" == "$2" ]]
 }
 
-# Submit and consume the passthrough result without any signing credentials.
+# Submit and consume the worker result without any signing credentials.
 jq -n '{signOptions: {allowedComponents: ["allowed-rpm", "absent-rpm"]}}' > "${WORK_DIR}/data.json"
 cp "${WORK_DIR}/data.json" "${WORK_DIR}/data-original.json"
 write_requests "${ARTIFACT_JSON}"
@@ -181,6 +193,10 @@ yq -o=json "${TASK}" | jq -e '
   $defaults.taskTimeout == "0h25m0s" and $defaults.signingRevision == "rok-bts-iterdev" and
   $env.TASKRUN_UID == "$(context.taskRun.uid)" and
   $env.REQUEST_NAMESPACE == "$(context.taskRun.namespace)" and
+  $env.OCI_STORAGE == "$(params.ociStorage)" and
+  $env.IMAGE_EXPIRES_AFTER == "$(params.ociArtifactExpiresAfter)" and
+  $env.TA_TASK_GIT_URL == "$(params.taskGitUrl)" and
+  $env.TA_TASK_GIT_REVISION == "$(params.taskGitRevision)" and
   $env.REQUEST_TIMEOUT == "$(params.requestTimeout)" and
   $env.PIPELINE_TIMEOUT == "$(params.pipelineTimeout)" and $env.TASK_TIMEOUT == "$(params.taskTimeout)"
 ' > /dev/null
@@ -197,6 +213,9 @@ yq -o=json "${PIPELINE}" | jq -e '
                  operator: "notin", values: ["promote"]}] and
   ([$bts.params[] | select(.name == "sourceDataArtifact") | .value] ==
     ["$(tasks.reduce-snapshot.results.sourceDataArtifact)"]) and
+  ([$bts.params[] | select(.name == "ociStorage") | .value] == ["$(params.ociStorage)"]) and
+  ([$bts.params[] | select(.name == "ociArtifactExpiresAfter") | .value] ==
+    ["$(params.ociArtifactExpiresAfter)"]) and
   ([$koji.params[] | select(.name == "sourceDataArtifact") | .value] ==
     ["$(tasks.bts-sign.results.sourceDataArtifact)"]) and
   all($tasks[] | select(.name == "push-artifacts-to-storage" or .name == "promote-koji-draft-build");

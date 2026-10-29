@@ -9,8 +9,8 @@ spec:
   description: |-
     Submits an InternalRequest for snapshot-based BTS, waits for completion, and returns the
     worker's sourceDataArtifact result. Reads signOptions.allowedComponents and Release attribution.
-    The current worker returns the input Trusted Artifact unchanged without signing RPMs.
-    Signing keys are not required for the passthrough worker.
+    The mock worker reconstructs selected RPM bundles and returns updated component references.
+    Signing keys are not required; no signatures are generated.
   params:
     - name: snapshotPath
       type: string
@@ -27,6 +27,13 @@ spec:
     - name: pipelineRunUid
       type: string
       description: Release PipelineRun UID for the InternalRequest correlation label
+    - name: ociStorage
+      type: string
+      description: OCI repository forwarded to the worker for bundles and release-data artifacts
+    - name: ociArtifactExpiresAfter
+      type: string
+      description: Retention of artifacts published by the worker; empty means no expiration
+      default: 1d
     - name: requestTimeout
       type: string
       description: Seconds to wait for the InternalRequest, including pipeline startup
@@ -144,6 +151,18 @@ spec:
           value: $(params.dataPath)
         - name: SOURCE_DATA_ARTIFACT
           value: $(params.sourceDataArtifact)
+        - name: OCI_STORAGE
+          value: $(params.ociStorage)
+        - name: IMAGE_EXPIRES_AFTER
+          value: $(params.ociArtifactExpiresAfter)
+        - name: TA_TASK_GIT_URL
+          value: $(params.taskGitUrl)
+        - name: TA_TASK_GIT_REVISION
+          value: $(params.taskGitRevision)
+        - name: ORAS_OPTIONS
+          value: $(params.orasOptions)
+        - name: TRUSTED_ARTIFACTS_DEBUG
+          value: $(params.trustedArtifactsDebug)
         - name: RESULT_FILE
           value: $(results.sourceDataArtifact.path)
         - name: SIGNING_REPO
@@ -207,7 +226,6 @@ spec:
         # NOTE: explicit allowlist until hub-policy gating is integrated (or some other gating).
         # NOTE: reuse the existing CLI; move orchestration to release-service-utils with real signing.
         # TODO: validate signing configuration when the worker implements real signing.
-        # TODO: preserve Koji metadata when publishing signed RPMs and a new snapshot spec.
         # TODO: add Snapshot CR support and genuine BTS Conforma evidence after real signing exists.
         STAGE=submit-and-wait
         printf 'BTS stage=%s repository=%s revision=%s serviceAccount=%s requester=%s\n' \
@@ -220,6 +238,12 @@ spec:
           -p "data_path=${DATA_PATH}" \
           -p "allowed_components=${ALLOWED_COMPONENTS}" \
           -p "requester=${REQUESTER}" \
+          -p "oci_storage=${OCI_STORAGE}" \
+          -p "oci_artifact_expires_after=${IMAGE_EXPIRES_AFTER}" \
+          -p "taTaskGitUrl=${TA_TASK_GIT_URL}" \
+          -p "taTaskGitRevision=${TA_TASK_GIT_REVISION}" \
+          -p "orasOptions=${ORAS_OPTIONS}" \
+          -p "trustedArtifactsDebug=${TRUSTED_ARTIFACTS_DEBUG}" \
           -p "taskGitUrl=${SIGNING_REPO}" \
           -p "taskGitRevision=${SIGNING_REVISION}" \
           -l "internal-services.appstudio.openshift.io/pipelinerun-uid=${PIPELINERUN_UID}" \
