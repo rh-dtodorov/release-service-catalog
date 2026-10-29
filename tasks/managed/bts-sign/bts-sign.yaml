@@ -325,13 +325,36 @@ spec:
         printf 'BTS stage=%s\n' "${STAGE}"
         printf '%s' "${OUTPUT_ARTIFACT}" > "${RESULT_FILE}"
         printf 'BTS completed\n'
+    - name: restore-probe-evidence
+      computeResources:
+        limits:
+          memory: 128Mi
+        requests:
+          memory: 64Mi
+          cpu: 30m
+      ref:
+        resolver: git
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: stepactions/use-trusted-artifact/use-trusted-artifact.yaml
+      params:
+        - name: workDir
+          value: /var/workdir/probe-evidence
+        - name: sourceDataArtifact
+          value: $(results.sourceDataArtifact)
+        - name: orasOptions
+          value: $(params.orasOptions)
     - name: dump-probe-evidence
       image: quay.io/konflux-ci/release-service-utils@sha256:da48275d90ecd65e2aec9c71f74b86314ce6ceb81dc3045d5c7546c9548273e8
       computeResources:
         limits:
-          memory: 256Mi
-        requests:
           memory: 128Mi
+        requests:
+          memory: 64Mi
           cpu: 30m
       script: |
         #!/usr/bin/env bash
@@ -341,23 +364,6 @@ spec:
         if [[ "$(cat "$(results.mode.path)")" != "probe" ]]; then
           exit 0
         fi
-        REF=$(cat "$(results.sourceDataArtifact.path)")
-        CONFIG=""
-        for candidate in "${HOME:-/tekton/home}/.docker/config.json" \
-            /tekton/creds-secrets/quay-token-*/.dockerconfigjson \
-            /tekton/creds-secrets/*/.dockerconfigjson; do
-          if [[ -f "${candidate}" ]]; then
-            CONFIG="${candidate}"
-            break
-          fi
-        done
-        if [[ -z "${CONFIG}" ]]; then
-          printf 'No registry credentials found for the evidence pull\n' >&2
-          exit 1
-        fi
-        mkdir -p /var/workdir/probe-evidence
-        oras pull --registry-config "${CONFIG}" \
-          --output /var/workdir/probe-evidence "${REF#oci:}"
         EVIDENCE="/var/workdir/probe-evidence/results/bts-probe"
         if [[ ! -d "${EVIDENCE}" ]]; then
           printf 'No probe evidence directory in the returned artifact\n' >&2
