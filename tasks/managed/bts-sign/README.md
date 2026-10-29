@@ -1,9 +1,11 @@
 # bts-sign
 
 Submits an InternalRequest for snapshot-based BTS, waits for completion, and returns the
-worker's sourceDataArtifact result. Reads signOptions.allowedComponents and Release attribution.
-The mock worker reconstructs selected RPM bundles and returns updated component references.
-Signing keys are not required; no signatures are generated.
+worker's sourceDataArtifact result. Reads signOptions.allowedComponents, signOptions.bts
+and signOptions.signKeytab, and Release attribution. In sign mode the mock worker
+reconstructs selected RPM bundles and returns updated component references. In probe
+mode the worker makes one raw signing-server request and returns the unchanged release
+data with probe evidence. The mode result lets the pipeline skip the Koji import.
 
 ## Parameters
 

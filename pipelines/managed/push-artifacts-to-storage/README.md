@@ -2,7 +2,8 @@
 
 Tekton pipeline to push rpms into the artifact storage instance.
 On import, BTS runs through an InternalRequest and its returned artifact is passed to Koji.
-The mock BTS worker reconstructs selected RPM bundles without generating signatures.
+The mock BTS worker reconstructs selected RPM bundles without generating signatures;
+probe mode skips the Koji import and returns probe evidence with the release data.
 Promotion does not run BTS.
 
 ## Parameters

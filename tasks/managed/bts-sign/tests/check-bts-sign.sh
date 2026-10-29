@@ -43,7 +43,7 @@ write_requests() {
 }
 
 run_caller() {
-    rm -f "${WORK_DIR}/result" "${WORK_DIR}/request-args.json" "${WORK_DIR}/get-args.json"
+    rm -f "${WORK_DIR}/result" "${WORK_DIR}/mode" "${WORK_DIR}/request-args.json" "${WORK_DIR}/get-args.json"
     DATA_FILE="${WORK_DIR}/data.json" \
     SNAPSHOT_FILE="${WORK_DIR}/snapshot.json" \
     RELEASE_FILE="${WORK_DIR}/release.json" \
@@ -57,6 +57,7 @@ run_caller() {
     ORAS_OPTIONS="--debug" \
     TRUSTED_ARTIFACTS_DEBUG="1" \
     RESULT_FILE="${WORK_DIR}/result" \
+    MODE_RESULT="${WORK_DIR}/mode" \
     SIGNING_REPO="https://gitlab.cee.redhat.com/dtodorov/signing.git" \
     SIGNING_REVISION="test-bts" \
     PIPELINERUN_UID="test-run" \
@@ -72,13 +73,20 @@ run_caller() {
 
 check_request_args() {
     jq -e --arg artifact "${EXPECTED_ARTIFACT}" --arg allowed "$1" \
-      --arg requester "$2" --arg account "${3:-release-service-account}" '. == [
+      --arg requester "$2" --arg account "${3:-release-service-account}" \
+      --arg mode "${4:-sign}" --arg alias "${5:-}" \
+      --arg principal "${6:-}" --arg keytab "${7:-keytab}" --arg secret "${8:-}" '. == [
         "--pipeline", "bts-sign",
         "-p", ("source_data_artifact=" + $artifact),
         "-p", "snapshot_path=run/snapshot.json",
         "-p", "data_path=run/data.json",
         "-p", ("allowed_components=" + $allowed),
         "-p", ("requester=" + $requester),
+        "-p", ("mode=" + $mode),
+        "-p", ("probe_key_alias=" + $alias),
+        "-p", ("kerberos_principal=" + $principal),
+        "-p", ("kerberos_keytab=" + $keytab),
+        "-p", ("kerberos_keytab_secret=" + $secret),
         "-p", "oci_storage=quay.io/example/worker-output",
         "-p", "oci_artifact_expires_after=7d",
         "-p", "taTaskGitUrl=https://github.com/example/catalog.git",
@@ -131,6 +139,39 @@ cmp "${WORK_DIR}/data.json" "${WORK_DIR}/data-original.json"
 write_requests '"quay.io/example/worker-result@sha256:returned"'
 run_caller
 [[ "$(<"${WORK_DIR}/result")" == 'quay.io/example/worker-result@sha256:returned' ]]
+
+# Probe mode forwards signing credentials and the requested operation.
+write_requests "${ARTIFACT_JSON}"
+jq -n '{signOptions: {
+  allowedComponents: ["allowed-rpm"],
+  bts: {mode: "probe", probeKeyAlias: "check-secureboot-key"},
+  signKeytab: {
+    principal: "check-principal@IPA.REDHAT.COM",
+    name: "check-keytab",
+    secret: "check-keytab-secret"
+  }
+}}' > "${WORK_DIR}/data.json"
+run_caller
+[[ "$(<"${WORK_DIR}/mode")" == "probe" ]]
+[[ $(wc -c < "${WORK_DIR}/mode") -eq 5 ]]
+check_request_args '["allowed-rpm"]' test-author release-service-account probe \
+  check-secureboot-key "check-principal@IPA.REDHAT.COM" check-keytab check-keytab-secret
+
+# Probe mode requires credentials and attribution before submission.
+jq -n '{signOptions: {bts: {mode: "probe", probeKeyAlias: "check-secureboot-key"}}}' > "${WORK_DIR}/data.json"
+expect_failure 'Probe without signing configuration'
+[[ ! -f "${WORK_DIR}/request-args.json" && ! -f "${WORK_DIR}/mode" ]]
+[[ "$(<"${WORK_DIR}/output")" == *'BTS failed: stage=validate-input exit=1'* ]]
+jq -n '{signOptions: {
+  bts: {mode: "probe", probeKeyAlias: "check-secureboot-key"},
+  signKeytab: {principal: "check-principal@IPA.REDHAT.COM", secret: "check-keytab-secret"}
+}}' > "${WORK_DIR}/data.json"
+jq -n '{}' > "${WORK_DIR}/release.json"
+expect_failure 'Probe without attribution'
+[[ ! -f "${WORK_DIR}/request-args.json" && ! -f "${WORK_DIR}/mode" ]]
+jq -n '{signOptions: {bts: {mode: "bogus"}}}' > "${WORK_DIR}/data.json"
+expect_failure 'Invalid BTS mode'
+[[ "$(<"${WORK_DIR}/output")" == *'BTS failed: stage=validate-input exit='* ]]
 
 # Missing allowlist/attribution still submits; service account selection matches rh-sign-rpm.
 write_requests "${ARTIFACT_JSON}"
@@ -208,9 +249,12 @@ yq -o=json "${PIPELINE}" | jq -e '
   ($tasks[] | select(.name == "push-rpm-to-koji")) as $koji |
   $bts.runAfter == ["verify-conforma"] and
   $koji.runAfter == ["bts-sign"] and
-  $bts.when == $koji.when and
   $bts.when == [{input: "$(tasks.collect-task-params.results.extractedValues[3])",
                  operator: "notin", values: ["promote"]}] and
+  $koji.when == [{input: "$(tasks.collect-task-params.results.extractedValues[3])",
+                  operator: "notin", values: ["promote"]},
+                 {input: "$(tasks.bts-sign.results.mode)",
+                  operator: "notin", values: ["probe"]}] and
   ([$bts.params[] | select(.name == "sourceDataArtifact") | .value] ==
     ["$(tasks.reduce-snapshot.results.sourceDataArtifact)"]) and
   ([$bts.params[] | select(.name == "ociStorage") | .value] == ["$(params.ociStorage)"]) and

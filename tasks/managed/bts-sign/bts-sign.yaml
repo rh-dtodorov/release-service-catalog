@@ -8,9 +8,11 @@ metadata:
 spec:
   description: |-
     Submits an InternalRequest for snapshot-based BTS, waits for completion, and returns the
-    worker's sourceDataArtifact result. Reads signOptions.allowedComponents and Release attribution.
-    The mock worker reconstructs selected RPM bundles and returns updated component references.
-    Signing keys are not required; no signatures are generated.
+    worker's sourceDataArtifact result. Reads signOptions.allowedComponents, signOptions.bts
+    and signOptions.signKeytab, and Release attribution. In sign mode the mock worker
+    reconstructs selected RPM bundles and returns updated component references. In probe
+    mode the worker makes one raw signing-server request and returns the unchanged release
+    data with probe evidence. The mode result lets the pipeline skip the Koji import.
   params:
     - name: snapshotPath
       type: string
@@ -84,6 +86,9 @@ spec:
     - name: sourceDataArtifact
       type: string
       description: Trusted Artifact returned by the completed BTS InternalRequest
+    - name: mode
+      type: string
+      description: BTS operation that was requested, sign or probe
   volumes:
     - name: workdir
       emptyDir: {}
@@ -165,6 +170,8 @@ spec:
           value: $(params.trustedArtifactsDebug)
         - name: RESULT_FILE
           value: $(results.sourceDataArtifact.path)
+        - name: MODE_RESULT
+          value: $(results.mode.path)
         - name: SIGNING_REPO
           value: $(params.signingRepo)
         - name: SIGNING_REVISION
@@ -215,6 +222,40 @@ spec:
           ' "${RELEASE_FILE}")
         fi
 
+        BTS_MODE=$(jq -er '
+          .signOptions.bts.mode // "sign" |
+          if type == "string" and (. == "sign" or . == "probe") then .
+          else error("signOptions.bts.mode must be sign or probe") end
+        ' "${DATA_FILE}")
+        PROBE_KEY_ALIAS=$(jq -er '
+          .signOptions.bts.probeKeyAlias // "" |
+          if type == "string" then . else error("signOptions.bts.probeKeyAlias must be a string") end
+        ' "${DATA_FILE}")
+        KERBEROS_PRINCIPAL=$(jq -er '
+          .signOptions.signKeytab.principal // "" |
+          if type == "string" then . else error("signOptions.signKeytab.principal must be a string") end
+        ' "${DATA_FILE}")
+        KERBEROS_KEYTAB=$(jq -er '
+          .signOptions.signKeytab.name // "keytab" |
+          if type == "string" and length > 0 then .
+          else error("signOptions.signKeytab.name must be a non-empty string") end
+        ' "${DATA_FILE}")
+        KERBEROS_KEYTAB_SECRET=$(jq -er '
+          .signOptions.signKeytab.secret // "" |
+          if type == "string" then . else error("signOptions.signKeytab.secret must be a string") end
+        ' "${DATA_FILE}")
+        if [[ "${BTS_MODE}" == "probe" ]]; then
+          if [[ -z "${KERBEROS_PRINCIPAL}" || -z "${KERBEROS_KEYTAB_SECRET}" ]]; then
+            printf 'BTS probe requires signOptions.signKeytab principal and secret\n' >&2
+            exit 1
+          fi
+          if [[ "${REQUESTER}" == "NOT_ENOUGH_DATA" ]]; then
+            printf 'BTS probe requires Release attribution\n' >&2
+            exit 1
+          fi
+        fi
+        printf '%s' "${BTS_MODE}" > "${MODE_RESULT}"
+
         SERVICE_ACCOUNT=$(jq -er '
           .signOptions.signPipelineServiceAccount // "release-service-account" |
           if type == "string" and length > 0 then .
@@ -238,6 +279,11 @@ spec:
           -p "data_path=${DATA_PATH}" \
           -p "allowed_components=${ALLOWED_COMPONENTS}" \
           -p "requester=${REQUESTER}" \
+          -p "mode=${BTS_MODE}" \
+          -p "probe_key_alias=${PROBE_KEY_ALIAS}" \
+          -p "kerberos_principal=${KERBEROS_PRINCIPAL}" \
+          -p "kerberos_keytab=${KERBEROS_KEYTAB}" \
+          -p "kerberos_keytab_secret=${KERBEROS_KEYTAB_SECRET}" \
           -p "oci_storage=${OCI_STORAGE}" \
           -p "oci_artifact_expires_after=${IMAGE_EXPIRES_AFTER}" \
           -p "taTaskGitUrl=${TA_TASK_GIT_URL}" \
