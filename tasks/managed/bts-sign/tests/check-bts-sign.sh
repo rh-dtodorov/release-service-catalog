@@ -242,6 +242,24 @@ yq -o=json "${TASK}" | jq -e '
   $env.PIPELINE_TIMEOUT == "$(params.pipelineTimeout)" and $env.TASK_TIMEOUT == "$(params.taskTimeout)"
 ' > /dev/null
 
+# Check probe evidence restoration and diagnostic dump wiring.
+yq -o=json "${TASK}" | jq -e '
+  .spec as $spec |
+  ($spec.steps[] | select(.name == "restore-probe-evidence")) as $restore |
+  ($spec.steps[] | select(.name == "dump-probe-evidence")) as $dump |
+  ([$spec.steps[].name] ==
+    ["use-trusted-artifact", "request-bts-sign", "restore-probe-evidence", "dump-probe-evidence"]) and
+  ([$restore.params[] | select(.name == "sourceDataArtifact") | .value] ==
+    ["$(results.sourceDataArtifact)"]) and
+  ([$restore.params[] | select(.name == "workDir") | .value] == ["/var/workdir/probe-evidence"]) and
+  ([$restore.ref.params[] | select(.name == "pathInRepo") | .value] ==
+    ["stepactions/use-trusted-artifact/use-trusted-artifact.yaml"]) and
+  ($dump.script | contains("$(results.mode.path)") and contains("/var/workdir/probe-evidence/results/bts-probe") and
+    contains("exit 0")) and
+  ($dump.computeResources.requests.memory != null) and
+  ($restore.computeResources.requests.memory != null)
+' > /dev/null
+
 # Check the actual DAG and result handoff, including promotion isolation.
 yq -o=json "${PIPELINE}" | jq -e '
   .spec.tasks as $tasks |
